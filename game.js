@@ -42,7 +42,10 @@ const state = {
   }
 };
 
+const TURN_TIME_LIMIT_SEC = 30;
 let aiTimerId = null;
+let turnTimerInterval = null;
+let turnRemainingSec = TURN_TIME_LIMIT_SEC;
 
 function createEmptyBoard() {
   return Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(0));
@@ -53,6 +56,105 @@ function clearAiTimer() {
     clearTimeout(aiTimerId);
     aiTimerId = null;
   }
+}
+
+function clearTurnTimer() {
+  if (turnTimerInterval) {
+    clearInterval(turnTimerInterval);
+    turnTimerInterval = null;
+  }
+}
+
+function updateTurnTimerBadge() {
+  const timerEl = document.getElementById('turn-timer-text');
+  if (!timerEl) return;
+
+  if (
+    state.screen !== 'game' ||
+    state.isGameOver ||
+    state.isWaitingOpponent ||
+    state.turnColor !== state.myColor
+  ) {
+    timerEl.classList.add('hidden');
+    timerEl.classList.remove('urgent');
+    return;
+  }
+
+  timerEl.classList.remove('hidden');
+  timerEl.textContent = `⏱ ${turnRemainingSec}s`;
+  timerEl.classList.toggle('urgent', turnRemainingSec <= 5);
+}
+
+function getRandomEmptyCell(board) {
+  const emptyCells = [];
+  for (let r = 0; r < BOARD_SIZE; r++) {
+    for (let c = 0; c < BOARD_SIZE; c++) {
+      if (board[r][c] === 0) {
+        emptyCells.push({ r, c });
+      }
+    }
+  }
+  if (emptyCells.length === 0) return null;
+  return emptyCells[Math.floor(Math.random() * emptyCells.length)];
+}
+
+function placeRandomMyStone() {
+  if (
+    state.screen !== 'game' ||
+    state.isGameOver ||
+    state.isWaitingOpponent ||
+    state.turnColor !== state.myColor
+  ) {
+    return;
+  }
+
+  const cell = getRandomEmptyCell(state.board);
+  if (!cell) return;
+
+  if (state.mode === 'single') {
+    applySinglePlayMove(cell.r, cell.c, state.myColor);
+  } else {
+    wsSend({ type: 'place_stone', r: cell.r, c: cell.c });
+  }
+}
+
+function startTurnTimer() {
+  clearTurnTimer();
+  turnRemainingSec = TURN_TIME_LIMIT_SEC;
+  updateTurnTimerBadge();
+
+  if (
+    state.screen !== 'game' ||
+    state.isGameOver ||
+    state.isWaitingOpponent ||
+    state.turnColor !== state.myColor
+  ) {
+    return;
+  }
+
+  turnTimerInterval = setInterval(() => {
+    if (
+      state.screen !== 'game' ||
+      state.isGameOver ||
+      state.isWaitingOpponent ||
+      state.turnColor !== state.myColor
+    ) {
+      clearTurnTimer();
+      updateTurnTimerBadge();
+      return;
+    }
+
+    turnRemainingSec -= 1;
+    if (turnRemainingSec <= 0) {
+      turnRemainingSec = 0;
+      updateTurnTimerBadge();
+      clearTurnTimer();
+      placeRandomMyStone();
+      return;
+    }
+
+    updateTurnTimerBadge();
+  }, 1000);
 }
 
 // ==========================================
@@ -270,6 +372,8 @@ function updateTurnBannerUI() {
     banner.className = 'turn-banner wait-turn';
     icon.textContent = '⏳';
     text.textContent = 'WAITING OPP...';
+    clearTurnTimer();
+    updateTurnTimerBadge();
     return;
   }
 
@@ -277,6 +381,8 @@ function updateTurnBannerUI() {
     banner.className = 'turn-banner opp-turn';
     icon.textContent = '🏁';
     text.textContent = 'FINISHED';
+    clearTurnTimer();
+    updateTurnTimerBadge();
     return;
   }
 
@@ -289,10 +395,15 @@ function updateTurnBannerUI() {
     banner.className = 'turn-banner opp-turn';
     text.textContent = state.mode === 'single' ? 'AI TURN...' : `${state.oppNickname} TURN`;
   }
+  startTurnTimer();
 }
 
 function showScreen(screenName) {
   state.screen = screenName;
+  if (screenName !== 'game') {
+    clearTurnTimer();
+    updateTurnTimerBadge();
+  }
   document.getElementById('screen-menu').classList.toggle('hidden', screenName !== 'menu');
   document.getElementById('screen-lobby').classList.toggle('hidden', screenName !== 'lobby');
   document.getElementById('screen-game').classList.toggle('hidden', screenName !== 'game');
@@ -717,6 +828,7 @@ function applySinglePlayMove(r, c, color) {
   if (winLine) {
     state.winLine = winLine;
     state.isGameOver = true;
+    updateTurnBannerUI();
     drawOmokBoard();
 
     const didIWin = color === state.myColor;
@@ -736,6 +848,7 @@ function applySinglePlayMove(r, c, color) {
 
   if (state.moveCount >= BOARD_SIZE * BOARD_SIZE) {
     state.isGameOver = true;
+    updateTurnBannerUI();
     drawOmokBoard();
     state.stats.single.me.draws += 1;
     state.stats.single.ai.draws += 1;
@@ -1549,6 +1662,8 @@ function handleMultiplayerMatchOver(msg) {
 // Game Over Modal
 // ==========================================
 function showGameOverModal(result, subtitleText) {
+  clearTurnTimer();
+  updateTurnTimerBadge();
   playMatchSound(result);
   const modal = document.getElementById('gameover-modal');
   const badge = document.getElementById('modal-badge');
@@ -1583,6 +1698,7 @@ function handleBoardClick(e) {
   const { r, c } = cell;
   if (state.board[r][c] !== 0) return;
 
+  clearTurnTimer();
   if (state.mode === 'single') {
     applySinglePlayMove(r, c, state.myColor);
   } else {
